@@ -646,18 +646,33 @@ function hexToRgb(hex){
 }
 
 /* ---- Smart text editing: detect existing text runs and let the user replace them in place ---- */
+function combineTransform(m1, m2){
+  return [
+    m1[0]*m2[0] + m1[2]*m2[1],
+    m1[1]*m2[0] + m1[3]*m2[1],
+    m1[0]*m2[2] + m1[2]*m2[3],
+    m1[1]*m2[2] + m1[3]*m2[3],
+    m1[0]*m2[4] + m1[2]*m2[5] + m1[4],
+    m1[1]*m2[4] + m1[3]*m2[5] + m1[5]
+  ];
+}
 async function getTextItemsForPage(page, viewport){
-  const content = await page.getTextContent();
-  return content.items.filter(it=>it.str && it.str.trim().length>0).map(item=>{
-    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-    const fontHeight = Math.hypot(tx[2], tx[3]);
-    const baselineX = tx[4], baselineY = tx[5];
-    const width = Math.max(14, item.width * viewport.scale);
-    const height = fontHeight * 1.25;
-    const x = baselineX;
-    const y = baselineY - fontHeight*0.9;
-    return { str: item.str, fontName: item.fontName, x, y, width, height };
-  });
+  try{
+    const content = await page.getTextContent();
+    return content.items.filter(it=>it.str && it.str.trim().length>0).map(item=>{
+      const tx = combineTransform(viewport.transform, item.transform);
+      const fontHeight = Math.hypot(tx[2], tx[3]);
+      const baselineX = tx[4], baselineY = tx[5];
+      const width = Math.max(14, item.width * viewport.scale);
+      const height = fontHeight * 1.25;
+      const x = baselineX;
+      const y = baselineY - fontHeight*0.9;
+      return { str: item.str, fontName: item.fontName, x, y, width, height };
+    });
+  }catch(err){
+    console.error('Text layer read failed:', err);
+    return [];
+  }
 }
 function guessFont(fontName){
   const n = (fontName||'').toLowerCase();
