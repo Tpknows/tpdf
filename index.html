@@ -548,6 +548,7 @@ function placeFloatEl(overlay, x, y, tool, viewport){
   }
   el.innerHTML = `<button class="btn small commit-btn" style="background:${State.editColor};border-color:${State.editColor}">Bake into page ✓</button><button class="btn small ghost cancel-btn">✕</button>` + inner + `<div class="resize-handle"></div>`;
   overlay.appendChild(el);
+  el.addEventListener('click', e=> e.stopPropagation());
   makeDraggable(el, overlay);
   el.querySelector('.commit-btn').onclick = async (ev)=>{
     ev.stopPropagation();
@@ -644,14 +645,6 @@ async function renderSign(){
   const overlay = document.createElement('div'); overlay.className='overlay-layer';
   overlay.style.width = viewport.width+'px'; overlay.style.height = viewport.height+'px';
   stack.appendChild(overlay);
-  overlay.addEventListener('click', e=>{
-    if(overlay.dataset.suppressClick){ delete overlay.dataset.suppressClick; return; }
-    if(!State.sigDataUrl) return;
-    overlay.querySelectorAll('.float-el').forEach(f=>f.remove());
-    const rect = overlay.getBoundingClientRect();
-    const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    placeSignature(overlay, x, y, viewport);
-  });
 
   let form = null, fields = [];
   try{ form = State.current.lib.getForm(); fields = form.getFields(); }catch(e){ fields = []; }
@@ -668,7 +661,10 @@ async function renderSign(){
       <button data-m="upload">Upload</button>
     </div>
     <div id="sigArea"></div>
-    <p class="note" style="margin-top:8px;">${State.sigDataUrl? 'Signature ready — click on the page to place it.' : 'Create a signature above, then click the page to place it.'}</p>
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn brass" id="addSigBtn" ${State.sigDataUrl? '' : 'disabled'}>+ Add signature to page</button>
+    </div>
+    <p class="note" style="margin-top:8px;">${State.sigDataUrl? 'Click "Add signature to page" as many times as you need — each one lands as its own box you can drag, resize, cancel (✕), or bake in independently.' : 'Create a signature above to enable placing it.'}</p>
   `;
 
   const fieldsList = document.getElementById('fieldsList');
@@ -697,6 +693,16 @@ async function renderSign(){
     };
     document.getElementById('applyFieldsBtn').onclick = ()=>applyFn(false);
     document.getElementById('flattenBtn').onclick = ()=>applyFn(true);
+  }
+
+  const addSigBtn = document.getElementById('addSigBtn');
+  if(addSigBtn){
+    addSigBtn.onclick = ()=>{
+      const count = overlay.querySelectorAll('.float-el').length;
+      const baseX = viewport.width/2 - 60 + (count*24);
+      const baseY = viewport.height/2 - 30 + (count*24);
+      placeSignature(overlay, baseX+60, baseY+30, viewport);
+    };
   }
 
   setupSignatureUI();
@@ -758,6 +764,7 @@ function placeSignature(overlay, x, y, viewport){
   el.style.left=(x-60)+'px'; el.style.top=(y-30)+'px'; el.style.width='120px'; el.style.height='60px';
   el.innerHTML = `<button class="btn small commit-btn">Place signature ✓</button><button class="btn small ghost cancel-btn">✕</button><img src="${State.sigDataUrl}" style="width:100%;height:100%;object-fit:contain;pointer-events:none;"><div class="resize-handle"></div>`;
   overlay.appendChild(el);
+  el.addEventListener('click', e=> e.stopPropagation());
   makeDraggable(el, overlay);
   el.querySelector('.cancel-btn').onclick = (ev)=>{ ev.stopPropagation(); el.remove(); };
   el.querySelector('.commit-btn').onclick = async ()=>{
@@ -770,8 +777,12 @@ function placeSignature(overlay, x, y, viewport){
     const imgBytes = await (await fetch(State.sigDataUrl)).arrayBuffer();
     const img = await State.current.lib.embedPng(imgBytes);
     pdfPage.drawImage(img, {x:px, y:pdfY, width:pw, height:ph});
-    await refreshEditorFromLib(); render(); toast('Signature placed');
+    await refreshEditorFromLib();
+    const canvasEl = overlay.previousElementSibling;
+    const freshPage = await State.current.pdfjsDoc.getPage(State.current.pageIndex+1);
+    await freshPage.render({canvasContext: canvasEl.getContext('2d'), viewport}).promise;
     el.remove();
+    toast('Signature placed');
   };
 }
 
