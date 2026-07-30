@@ -139,6 +139,7 @@
   .float-el textarea{border:none;background:transparent;resize:none;outline:none;width:100%;height:100%;font-family:'Inter',sans-serif;}
   .float-el .resize-handle{position:absolute;width:10px;height:10px;right:-5px;bottom:-5px;background:var(--brass);cursor:nwse-resize;border-radius:2px;}
   .float-el .commit-btn{position:absolute;top:-26px;left:0;font-size:10px;}
+  .float-el .cancel-btn{position:absolute;top:-26px;right:-1px;font-size:10px;padding:6px 8px;background:var(--white);}
 
   .field-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);}
   .field-row label{font-size:12px;color:var(--ink);font-weight:500;flex:0 0 40%;}
@@ -471,7 +472,9 @@ async function renderEdit(){
   stack.appendChild(overlay);
 
   overlay.addEventListener('click', e=>{
+    if(overlay.dataset.suppressClick){ delete overlay.dataset.suppressClick; return; }
     if(!State.editTool) return;
+    overlay.querySelectorAll('.float-el').forEach(f=>f.remove());
     const rect = overlay.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     placeFloatEl(overlay, x, y, State.editTool, viewport);
@@ -543,12 +546,16 @@ function placeFloatEl(overlay, x, y, tool, viewport){
   } else if(tool==='highlight'){
     el.style.background = State.editColor; el.style.opacity='0.32'; el.style.border='1px dashed '+State.editColor;
   }
-  el.innerHTML = `<button class="btn small commit-btn" style="background:${State.editColor};border-color:${State.editColor}">Bake into page ✓</button>` + inner + `<div class="resize-handle"></div>`;
+  el.innerHTML = `<button class="btn small commit-btn" style="background:${State.editColor};border-color:${State.editColor}">Bake into page ✓</button><button class="btn small ghost cancel-btn">✕</button>` + inner + `<div class="resize-handle"></div>`;
   overlay.appendChild(el);
   makeDraggable(el, overlay);
   el.querySelector('.commit-btn').onclick = async (ev)=>{
     ev.stopPropagation();
     await bakeElement(el, overlay, tool, viewport);
+    el.remove();
+  };
+  el.querySelector('.cancel-btn').onclick = (ev)=>{
+    ev.stopPropagation();
     el.remove();
   };
 }
@@ -558,12 +565,14 @@ function makeDraggable(el, overlay){
   el.addEventListener('mousedown', e=>{
     if(e.target.classList.contains('resize-handle') || e.target.tagName==='TEXTAREA' || e.target.tagName==='INPUT' || e.target.tagName==='BUTTON') return;
     dragging=true; offX = e.clientX - el.offsetLeft; offY = e.clientY - el.offsetTop;
+    overlay.dataset.suppressClick = '1';
     e.stopPropagation();
   });
   const handle = el.querySelector('.resize-handle');
   let resizing=false, startW=0, startH=0, startX=0, startY=0;
   handle.addEventListener('mousedown', e=>{
     resizing=true; startW=el.offsetWidth; startH=el.offsetHeight; startX=e.clientX; startY=e.clientY;
+    overlay.dataset.suppressClick = '1';
     e.stopPropagation(); e.preventDefault();
   });
   window.addEventListener('mousemove', e=>{
@@ -636,7 +645,9 @@ async function renderSign(){
   overlay.style.width = viewport.width+'px'; overlay.style.height = viewport.height+'px';
   stack.appendChild(overlay);
   overlay.addEventListener('click', e=>{
+    if(overlay.dataset.suppressClick){ delete overlay.dataset.suppressClick; return; }
     if(!State.sigDataUrl) return;
+    overlay.querySelectorAll('.float-el').forEach(f=>f.remove());
     const rect = overlay.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     placeSignature(overlay, x, y, viewport);
@@ -743,10 +754,12 @@ function setupSignatureUI(){
 
 function placeSignature(overlay, x, y, viewport){
   const el = document.createElement('div'); el.className='float-el'; el.style.borderColor='var(--brass)';
+  el.style.background='transparent';
   el.style.left=(x-60)+'px'; el.style.top=(y-30)+'px'; el.style.width='120px'; el.style.height='60px';
-  el.innerHTML = `<button class="btn small commit-btn">Place signature ✓</button><img src="${State.sigDataUrl}" style="width:100%;height:100%;object-fit:contain;"><div class="resize-handle"></div>`;
+  el.innerHTML = `<button class="btn small commit-btn">Place signature ✓</button><button class="btn small ghost cancel-btn">✕</button><img src="${State.sigDataUrl}" style="width:100%;height:100%;object-fit:contain;pointer-events:none;"><div class="resize-handle"></div>`;
   overlay.appendChild(el);
   makeDraggable(el, overlay);
+  el.querySelector('.cancel-btn').onclick = (ev)=>{ ev.stopPropagation(); el.remove(); };
   el.querySelector('.commit-btn').onclick = async ()=>{
     const scale = viewport.scale;
     const pdfPage = State.current.lib.getPage(State.current.pageIndex);
