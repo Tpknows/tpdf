@@ -220,6 +220,13 @@ function toast(msg){
   clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('show'), 2600);
 }
 function uid(){ return Math.random().toString(36).slice(2,9); }
+function dataUrlToBytes(dataUrl){
+  const base64 = dataUrl.split(',')[1];
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 
 /* ============================= TABS ============================= */
 document.querySelectorAll('nav.tabs button').forEach(btn=>{
@@ -483,6 +490,7 @@ async function renderEdit(){
   panel.innerHTML = `
     <h3>Edit &amp; Annotate</h3>
     <p class="note">Click a tool, then click on the page to place it. Drag to move, use the corner handle to resize, then press "Bake into page" to make it permanent.</p>
+    <p class="note">To change existing words: pick the <b>white</b> (or paper-tone) swatch, draw a <b>Redact box</b> over the old text to cover it, bake it in — then switch to <b>Text</b>, pick a dark color, and type the new value on top.</p>
     <h4>Tools</h4>
     <div class="toolbtn-group">
       <div class="toolbtn" data-tool="text">🅣 Text</div>
@@ -501,7 +509,7 @@ async function renderEdit(){
     <h4>Export</h4>
     <div class="btn-row"><button class="btn brass" id="downloadEditedBtn">⤓ Download PDF</button></div>
   `;
-  const colors = ['#8C3A34','#A9782F','#1E2430','#2E6B4F','#2A4E8C'];
+  const colors = ['#FFFFFF','#F6F2EA','#8C3A34','#A9782F','#1E2430','#2E6B4F','#2A4E8C'];
   const sw = document.getElementById('swatches');
   colors.forEach(c=>{
     const s = document.createElement('span'); s.className='swatch'+(State.editColor===c?' active':'');
@@ -584,6 +592,7 @@ function makeDraggable(el, overlay){
 }
 
 async function bakeElement(el, overlay, tool, viewport){
+  try{
   const scale = viewport.scale;
   const pdfPage = State.current.lib.getPage(State.current.pageIndex);
   const pageH = pdfPage.getHeight();
@@ -617,6 +626,10 @@ async function bakeElement(el, overlay, tool, viewport){
   await refreshEditorFromLib();
   render();
   toast('Applied');
+  }catch(err){
+    console.error(err);
+    toast('Could not apply: ' + err.message);
+  }
 }
 function hexToRgb(hex){
   const v = hex.replace('#','');
@@ -665,6 +678,13 @@ async function renderSign(){
       <button class="btn brass" id="addSigBtn" ${State.sigDataUrl? '' : 'disabled'}>+ Add signature to page</button>
     </div>
     <p class="note" style="margin-top:8px;">${State.sigDataUrl? 'Click "Add signature to page" as many times as you need — each one lands as its own box you can drag, resize, cancel (✕), or bake in independently.' : 'Create a signature above to enable placing it.'}</p>
+    <h4>Finish</h4>
+    <div class="btn-row">
+      <button class="btn brass" id="downloadSignedBtn">⤓ Download signed PDF</button>
+    </div>
+    <div class="btn-row" style="margin-top:6px;">
+      <button class="btn ghost" id="printSignedBtn">🖶 Open to print</button>
+    </div>
   `;
 
   const fieldsList = document.getElementById('fieldsList');
@@ -694,6 +714,19 @@ async function renderSign(){
     document.getElementById('applyFieldsBtn').onclick = ()=>applyFn(false);
     document.getElementById('flattenBtn').onclick = ()=>applyFn(true);
   }
+
+  document.getElementById('downloadSignedBtn').onclick = async ()=>{
+    const bytes = await State.current.lib.save();
+    downloadBytes(bytes, State.current.name.replace(/\.pdf$/i,'') + '-signed.pdf');
+    toast('Downloaded');
+  };
+  document.getElementById('printSignedBtn').onclick = async ()=>{
+    const bytes = await State.current.lib.save();
+    const blob = new Blob([bytes], {type:'application/pdf'});
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+  };
 
   const addSigBtn = document.getElementById('addSigBtn');
   if(addSigBtn){
@@ -768,21 +801,26 @@ function placeSignature(overlay, x, y, viewport){
   makeDraggable(el, overlay);
   el.querySelector('.cancel-btn').onclick = (ev)=>{ ev.stopPropagation(); el.remove(); };
   el.querySelector('.commit-btn').onclick = async ()=>{
-    const scale = viewport.scale;
-    const pdfPage = State.current.lib.getPage(State.current.pageIndex);
-    const pageH = pdfPage.getHeight();
-    const px = el.offsetLeft/scale, pw = el.offsetWidth/scale, ph = el.offsetHeight/scale;
-    const pyTop = el.offsetTop/scale;
-    const pdfY = pageH - pyTop - ph;
-    const imgBytes = await (await fetch(State.sigDataUrl)).arrayBuffer();
-    const img = await State.current.lib.embedPng(imgBytes);
-    pdfPage.drawImage(img, {x:px, y:pdfY, width:pw, height:ph});
-    await refreshEditorFromLib();
-    const canvasEl = overlay.previousElementSibling;
-    const freshPage = await State.current.pdfjsDoc.getPage(State.current.pageIndex+1);
-    await freshPage.render({canvasContext: canvasEl.getContext('2d'), viewport}).promise;
-    el.remove();
-    toast('Signature placed');
+    try{
+      const scale = viewport.scale;
+      const pdfPage = State.current.lib.getPage(State.current.pageIndex);
+      const pageH = pdfPage.getHeight();
+      const px = el.offsetLeft/scale, pw = el.offsetWidth/scale, ph = el.offsetHeight/scale;
+      const pyTop = el.offsetTop/scale;
+      const pdfY = pageH - pyTop - ph;
+      const imgBytes = dataUrlToBytes(State.sigDataUrl);
+      const img = await State.current.lib.embedPng(imgBytes);
+      pdfPage.drawImage(img, {x:px, y:pdfY, width:pw, height:ph});
+      await refreshEditorFromLib();
+      const canvasEl = overlay.previousElementSibling;
+      const freshPage = await State.current.pdfjsDoc.getPage(State.current.pageIndex+1);
+      await freshPage.render({canvasContext: canvasEl.getContext('2d'), viewport}).promise;
+      el.remove();
+      toast('Signature placed');
+    }catch(err){
+      console.error(err);
+      toast('Could not place signature: ' + err.message);
+    }
   };
 }
 
@@ -889,7 +927,7 @@ async function compressAndDownload(){
     canvas.width = viewport.width; canvas.height = viewport.height;
     await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
     const jpgDataUrl = canvas.toDataURL('image/jpeg', quality);
-    const jpgBytes = await (await fetch(jpgDataUrl)).arrayBuffer();
+    const jpgBytes = dataUrlToBytes(jpgDataUrl);
     const img = await out.embedJpg(jpgBytes);
     const origPage = State.current.lib.getPage(i);
     const {width, height} = origPage.getSize();
