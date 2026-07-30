@@ -477,23 +477,32 @@ async function renderEdit(){
   const overlay = document.createElement('div'); overlay.className='overlay-layer'; overlay.id='overlayLayer';
   overlay.style.width = viewport.width+'px'; overlay.style.height = viewport.height+'px';
   stack.appendChild(overlay);
+  const textItems = await getTextItemsForPage(page, viewport);
 
   overlay.addEventListener('click', e=>{
     if(overlay.dataset.suppressClick){ delete overlay.dataset.suppressClick; return; }
-    if(!State.editTool) return;
-    overlay.querySelectorAll('.float-el').forEach(f=>f.remove());
     const rect = overlay.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if(State.editTool === 'smarttext'){
+      const hit = textItems.find(t => x>=t.x && x<=t.x+t.width && y>=t.y && y<=t.y+t.height);
+      if(!hit){ toast(textItems.length? 'No text detected there — try clicking directly on a word' : 'No real text layer on this page (likely scanned) — use Redact box + Text instead'); return; }
+      overlay.querySelectorAll('.float-el').forEach(f=>f.remove());
+      openSmartTextEditor(overlay, hit, viewport, canvas);
+      return;
+    }
+    if(!State.editTool) return;
+    overlay.querySelectorAll('.float-el').forEach(f=>f.remove());
     placeFloatEl(overlay, x, y, State.editTool, viewport);
   });
 
   panel.innerHTML = `
     <h3>Edit &amp; Annotate</h3>
-    <p class="note">Click a tool, then click on the page to place it. Drag to move, use the corner handle to resize, then press "Bake into page" to make it permanent.</p>
-    <p class="note">To change existing words: pick the <b>white</b> (or paper-tone) swatch, draw a <b>Redact box</b> over the old text to cover it, bake it in — then switch to <b>Text</b>, pick a dark color, and type the new value on top.</p>
+    <p class="note"><b>Edit existing text</b> reads the page and lets you click a word/line to replace it — it auto-covers the old text and matches the font size. Best for regular (non-scanned) PDFs.</p>
+    <p class="note">For other tools: click one, then click on the page to place it. Drag to move, use the corner handle to resize, then press "Bake into page" to make it permanent.</p>
     <h4>Tools</h4>
     <div class="toolbtn-group">
-      <div class="toolbtn" data-tool="text">🅣 Text</div>
+      <div class="toolbtn" data-tool="smarttext">✎ Edit existing text</div>
+      <div class="toolbtn" data-tool="text">🅣 Add text</div>
       <div class="toolbtn" data-tool="image">🖼 Image</div>
       <div class="toolbtn" data-tool="rect">▭ Redact box</div>
       <div class="toolbtn" data-tool="highlight">▮ Highlight</div>
@@ -636,6 +645,97 @@ function hexToRgb(hex){
   return [parseInt(v.slice(0,2),16)/255, parseInt(v.slice(2,4),16)/255, parseInt(v.slice(4,6),16)/255];
 }
 
+/* ---- Smart text editing: detect existing text runs and let the user replace them in place ---- */
+async function getTextItemsForPage(page, viewport){
+  const content = await page.getTextContent();
+  return content.items.filter(it=>it.str && it.str.trim().length>0).map(item=>{
+    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const fontHeight = Math.hypot(tx[2], tx[3]);
+    const baselineX = tx[4], baselineY = tx[5];
+    const width = Math.max(14, item.width * viewport.scale);
+    const height = fontHeight * 1.25;
+    const x = baselineX;
+    const y = baselineY - fontHeight*0.9;
+    return { str: item.str, fontName: item.fontName, x, y, width, height };
+  });
+}
+function guessFont(fontName){
+  const n = (fontName||'').toLowerCase();
+  const bold = n.includes('bold');
+  const italic = n.includes('italic') || n.includes('oblique');
+  if(n.includes('times') || n.includes('serif') || n.includes('georgia') || n.includes('garamond')){
+    if(bold && italic) return StandardFonts.TimesRomanBoldItalic;
+    if(bold) return StandardFonts.TimesRomanBold;
+    if(italic) return StandardFonts.TimesRomanItalic;
+    return StandardFonts.TimesRoman;
+  }
+  if(n.includes('courier') || n.includes('mono') || n.includes('consolas')){
+    if(bold && italic) return StandardFonts.CourierBoldOblique;
+    if(bold) return StandardFonts.CourierBold;
+    if(italic) return StandardFonts.CourierOblique;
+    return StandardFonts.Courier;
+  }
+  if(bold && italic) return StandardFonts.HelveticaBoldOblique;
+  if(bold) return StandardFonts.HelveticaBold;
+  if(italic) return StandardFonts.HelveticaOblique;
+  return StandardFonts.Helvetica;
+}
+function openSmartTextEditor(overlay, hit, viewport, canvas){
+  const el = document.createElement('div'); el.className='float-el';
+  el.style.left = hit.x+'px'; el.style.top = hit.y+'px';
+  el.style.width = Math.max(70, hit.width+14)+'px'; el.style.height = hit.height+'px';
+  el.style.borderColor = 'var(--brass)'; el.style.background = 'rgba(255,253,248,0.95)';
+  const safeVal = hit.str.replace(/"/g,'&quot;');
+  el.innerHTML = `<button class="btn small commit-btn">Replace ✓</button><button class="btn small ghost cancel-btn">✕</button>
+    <input type="text" value="${safeVal}" style="width:100%;height:100%;border:none;background:transparent;font-size:${Math.max(10,hit.height*0.62)}px;padding:2px;">
+    <div class="resize-handle"></div>`;
+  overlay.appendChild(el);
+  el.addEventListener('click', e=>e.stopPropagation());
+  makeDraggable(el, overlay);
+  const input = el.querySelector('input');
+  setTimeout(()=>{ input.focus(); input.select(); }, 0);
+  el.querySelector('.cancel-btn').onclick = (ev)=>{ ev.stopPropagation(); el.remove(); };
+  el.querySelector('.commit-btn').onclick = async (ev)=>{
+    ev.stopPropagation();
+    try{
+      await applySmartTextReplace(hit, input.value, viewport, canvas);
+      el.remove();
+    }catch(err){
+      console.error(err);
+      toast('Could not replace text: ' + err.message);
+    }
+  };
+}
+async function applySmartTextReplace(hit, newText, viewport, canvas){
+  const scale = viewport.scale;
+  const pdfPage = State.current.lib.getPage(State.current.pageIndex);
+  const pageH = pdfPage.getHeight();
+  const ctx = canvas.getContext('2d');
+  let bg = [255,255,255];
+  try{
+    const sampleX = Math.min(canvas.width-1, Math.max(0, Math.round(hit.x + hit.width + 3)));
+    const sampleY = Math.min(canvas.height-1, Math.max(0, Math.round(hit.y + hit.height/2)));
+    const px = ctx.getImageData(sampleX, sampleY, 1, 1).data;
+    bg = [px[0], px[1], px[2]];
+  }catch(e){ /* fall back to white */ }
+
+  const x = hit.x/scale;
+  const wPts = hit.width/scale;
+  const hPts = hit.height/scale;
+  const yTopPts = hit.y/scale;
+  const yPdf = pageH - yTopPts - hPts;
+  const pad = 1.2;
+  pdfPage.drawRectangle({ x: x-pad, y: yPdf-pad, width: wPts+pad*2, height: hPts+pad*2, color: rgb(bg[0]/255, bg[1]/255, bg[2]/255) });
+  if(newText.trim()){
+    const font = await State.current.lib.embedFont(guessFont(hit.fontName));
+    const fontSize = Math.max(6, hPts*0.72);
+    pdfPage.drawText(newText, { x, y: yPdf + hPts*0.18, size: fontSize, font, color: rgb(0,0,0), maxWidth: wPts*3 });
+  }
+  await refreshEditorFromLib();
+  render();
+  toast('Text replaced');
+}
+
 /* ============================= FILL & SIGN ============================= */
 async function renderSign(){
   const ws = document.getElementById('workspace');
@@ -674,10 +774,11 @@ async function renderSign(){
       <button data-m="upload">Upload</button>
     </div>
     <div id="sigArea"></div>
+    <div id="sigReadyPreview" style="margin-top:8px;"></div>
     <div class="btn-row" style="margin-top:10px;">
       <button class="btn brass" id="addSigBtn" ${State.sigDataUrl? '' : 'disabled'}>+ Add signature to page</button>
     </div>
-    <p class="note" style="margin-top:8px;">${State.sigDataUrl? 'Click "Add signature to page" as many times as you need — each one lands as its own box you can drag, resize, cancel (✕), or bake in independently.' : 'Create a signature above to enable placing it.'}</p>
+    <p class="note" id="sigNote" style="margin-top:8px;">${State.sigDataUrl? 'Click "Add signature to page" as many times as you need — each one lands as its own box you can drag, resize, cancel (✕), or bake in independently.' : 'Create a signature above, then press "Use this signature" to enable placing it.'}</p>
     <h4>Finish</h4>
     <div class="btn-row">
       <button class="btn brass" id="downloadSignedBtn">⤓ Download signed PDF</button>
@@ -741,6 +842,16 @@ async function renderSign(){
   setupSignatureUI();
 }
 
+function captureSignature(dataUrl){
+  State.sigDataUrl = dataUrl;
+  const addBtn = document.getElementById('addSigBtn');
+  if(addBtn) addBtn.disabled = false;
+  const preview = document.getElementById('sigReadyPreview');
+  if(preview) preview.innerHTML = `<img src="${dataUrl}" alt="signature preview" style="height:44px;max-width:100%;border:1px solid var(--line);border-radius:3px;background:#fff;padding:4px;">`;
+  const note = document.getElementById('sigNote');
+  if(note) note.textContent = 'Signature ready — click "+ Add signature to page" below.';
+  toast('Signature ready');
+}
 function setupSignatureUI(){
   const area = document.getElementById('sigArea');
   function drawMode(){
@@ -757,7 +868,7 @@ function setupSignatureUI(){
     canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
     canvas.addEventListener('touchstart',start); canvas.addEventListener('touchmove',move); canvas.addEventListener('touchend',end);
     document.getElementById('clearSigBtn').onclick = ()=>ctx.clearRect(0,0,canvas.width,canvas.height);
-    document.getElementById('useSigBtn').onclick = ()=>{ State.sigDataUrl = canvas.toDataURL('image/png'); renderSign(); };
+    document.getElementById('useSigBtn').onclick = ()=>{ captureSignature(canvas.toDataURL('image/png')); };
   }
   function typeMode(){
     area.innerHTML = `<input type="text" id="sigTypeInput" placeholder="Your name" style="margin-bottom:8px;">
@@ -769,7 +880,7 @@ function setupSignatureUI(){
       const c = document.createElement('canvas'); c.width=400; c.height=120;
       const ctx = c.getContext('2d'); ctx.font = "56px 'Caveat', cursive"; ctx.fillStyle='#1E2430';
       ctx.textBaseline='middle'; ctx.fillText(prev.textContent, 10, 65);
-      State.sigDataUrl = c.toDataURL('image/png'); renderSign();
+      captureSignature(c.toDataURL('image/png'));
     };
   }
   function uploadMode(){
@@ -777,8 +888,8 @@ function setupSignatureUI(){
     document.getElementById('useUploadSigBtn').onclick = async ()=>{
       const f = document.getElementById('sigUpload').files[0];
       if(!f){ toast('Choose an image first'); return; }
-      State.sigDataUrl = await new Promise(res=>{ const r = new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(f); });
-      renderSign();
+      const dataUrl = await new Promise(res=>{ const r = new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(f); });
+      captureSignature(dataUrl);
     };
   }
   document.querySelectorAll('.sig-tabs button').forEach(b=>{
